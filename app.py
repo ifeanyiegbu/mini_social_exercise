@@ -110,7 +110,123 @@ def feed():
     offset = (page - 1) * POSTS_PER_PAGE
 
     current_user_id = session.get('user_id')
+    POST_GOAL = 3
+    COMMENT_GOAL = 5
+    REACTION_GOAL = 10
+
+    post_count = 0
+    comment_count = 0
+    reaction_count = 0
+    progress_percent = 0
     params = []
+    attention_posts = []
+    if current_user_id:
+        post_count = query_db(
+            "SELECT COUNT(*) AS count FROM posts WHERE user_id = ?",
+            (current_user_id,),
+            one=True
+        )["count"]
+
+        comment_count = query_db(
+            "SELECT COUNT(*) AS count FROM comments WHERE user_id = ?",
+            (current_user_id,),
+            one=True
+        )["count"]
+
+        reaction_count = query_db(
+            "SELECT COUNT(*) AS count FROM reactions WHERE user_id = ?",
+            (current_user_id,),
+            one=True
+        )["count"]
+
+        completed = (
+            post_count +
+            comment_count +
+            reaction_count
+        )
+
+        goal_total = (
+            POST_GOAL +
+            COMMENT_GOAL +
+            REACTION_GOAL
+        )
+
+        progress_percent = min(
+            round((completed / goal_total) * 100),
+            100
+        )
+        
+        attention_posts = query_db(
+        """
+        SELECT p.id,
+               p.content,
+               p.created_at,
+               u.username
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.user_id IN (
+            SELECT followed_id
+            FROM follows
+            WHERE follower_id = ?
+        )
+        AND p.id NOT IN (
+            SELECT post_id
+            FROM reactions
+            WHERE user_id = ?
+        )
+        AND p.id NOT IN (
+            SELECT post_id
+            FROM comments
+            WHERE user_id = ?
+        )
+        ORDER BY p.created_at DESC
+        LIMIT 5
+        """,
+        (
+            current_user_id,
+            current_user_id,
+            current_user_id
+        )
+    )
+    attention_count = len(attention_posts)
+    
+    supporters = query_db(
+    """
+    SELECT DISTINCT
+           u.id,
+           u.username
+    FROM users u
+    WHERE u.id IN (
+
+        SELECT c.user_id
+        FROM comments c
+        JOIN posts p
+             ON c.post_id = p.id
+        WHERE p.user_id = ?
+
+        UNION
+
+        SELECT r.user_id
+        FROM reactions r
+        JOIN posts p
+             ON r.post_id = p.id
+        WHERE p.user_id = ?
+
+    )
+    AND u.id != ?
+    LIMIT 5
+    """,
+    (
+        current_user_id,
+        current_user_id,
+        current_user_id
+    )
+)
+
+    supporter_count = len(supporters)
+    print("ATTENTION POSTS:", attention_posts)
+    print("ATTENTION COUNT:", attention_count)
+
 
     #  2. Build the Query 
     where_clause = ""
@@ -193,13 +309,24 @@ def feed():
 
     #  4. Render Template with Pagination Info 
     return render_template('feed.html.j2', 
-                           posts=posts_data, 
+                           posts=posts_data,
+                           attention_posts=attention_posts,
+                           attention_count=attention_count,
+                           supporters=supporters,
+                           supporter_count=supporter_count,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           post_count=post_count,
+                           comment_count=comment_count,
+                           reaction_count=reaction_count,
+                           progress_percent=progress_percent,
+                           post_goal=POST_GOAL,
+                           comment_goal=COMMENT_GOAL,
+                           reaction_goal=REACTION_GOAL,)
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():

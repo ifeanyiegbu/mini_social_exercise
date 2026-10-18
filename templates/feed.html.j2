@@ -5,24 +5,150 @@
 <div class="align-center text-center">
   <img src="{{ url_for('static', filename='icon.png') }}" alt="Logo" style="height: 64px;" class="mb-4">
 </div>
-
 {% if session.get('user_id') %}
+
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card border-primary shadow-sm">
+    <div class="card-header bg-primary text-white">
+      <h5 class="mb-0">Weekly Contribution Challenge</h5>
+    </div>
+    <div class="card-body">
+      <p class="mb-2">
+        📝 Posts: {{ post_count }}/{{ post_goal }}
+      </p>
+      <p class="mb-2">
+        💬 Comments: {{ comment_count }}/{{ comment_goal }}
+      </p>
+      <p class="mb-3">
+        👍 Reactions: {{ reaction_count }}/{{ reaction_goal }}
+      </p>
+      <div class="progress">
+        <div
+          class="progress-bar bg-success"
+          role="progressbar"
+          style="width: {{ progress_percent }}%;"
+          aria-valuenow="{{ progress_percent }}"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          {{ progress_percent }}%
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="col-md-8 mx-auto mb-4">
   <div class="card shadow-sm">
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
-      <form action="{{ url_for('add_post') }}" method="POST">
+
+      
         <div class="mb-3">
-          <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
+          <textarea
+            class="form-control"
+            name="content"
+            rows="3"
+            placeholder="What's on your mind, {{ session.get('username') }}?"
+            required></textarea>
         </div>
-        <button type="submit" class="btn btn-primary float-end">Post</button>
+
+        <button type="submit" class="btn btn-primary float-end">
+          Post
+        </button>
       </form>
+
     </div>
   </div>
 </div>
+
 {% endif %}
 
-<h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card border-warning shadow-sm">
+
+    <div class="card-header bg-warning">
+      <h5 class="mb-0">Posts Needing Your Attention</h5>
+    </div>
+
+    <div class="card-body">
+
+      <p class="text-muted mb-2">
+        You have {{ attention_count }} contribution opportunities waiting for your engagement.
+      </p>
+
+      {% if attention_posts %}
+
+        {% for post in attention_posts %}
+        <div class="mb-3 border-bottom pb-2">
+          <strong>{{ post.username }}</strong><br>
+
+          {{ post.content[:120] }}
+
+          {% if post.content|length > 120 %}
+          ...
+          {% endif %}
+        </div>
+        {% endfor %}
+
+      {% else %}
+
+        <p class="text-success">
+          ✅ Great job! You have engaged with all recent posts from people you follow.
+        </p>
+
+      {% endif %}
+
+    </div>
+
+  </div>
+</div>
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card border-success shadow-sm">
+
+    <div class="card-header bg-success text-white">
+      <h5 class="mb-0">Return the Favour</h5>
+    </div>
+
+    <div class="card-body">
+
+      <p class="text-muted">
+        {{ supporter_count }} community members have recently supported your content.
+      </p>
+
+      {% if supporters %}
+
+        {% for user in supporters %}
+
+        <div class="mb-2">
+          <strong>{{ user.username }}</strong>
+          has engaged with your content.
+          Consider visiting their profile and interacting with their posts.
+        </div>
+
+        {% endfor %}
+
+      {% else %}
+
+        <p class="text-success">
+    ✅ Keep contributing to receive engagement from other community members.
+        </p>
+
+
+      {% endif %}
+
+    </div>
+
+  </div>
+</div>
+
+<br>
+
+<h2 class="text-center border-bottom pb-2 mb-4">
+  <span>Posts</span>
+</h2>
+
+<br>
 
 <div class="mb-4 text-center">
 
