@@ -330,6 +330,7 @@ def feed():
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
+    print("ADD POST ROUTE CALLED")
     """Handles creating a new post from the feed."""
     user_id = session.get('user_id')
 
