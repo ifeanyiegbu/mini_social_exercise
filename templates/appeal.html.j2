@@ -1,0 +1,46 @@
+
+{% extends "base.html.j2" %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Appeal a Moderation Decision</h2>
+
+    <p>
+        You can explain why you believe the moderation decision
+        on your {{ content_type }} was incorrect.
+    </p>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5>Your moderated content</h5>
+            <p>{{ content }}</p>
+        </div>
+    </div>
+
+    <form method="POST">
+        <div class="mb-3">
+            <label for="appeal_reason" class="form-label">
+                Why are you appealing this decision?
+            </label>
+
+            <textarea
+                class="form-control"
+                id="appeal_reason"
+                name="appeal_reason"
+                rows="5"
+                maxlength="1000"
+                required
+                placeholder="Explain why you believe the moderation decision should be reviewed..."
+            ></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-primary">
+            Submit Appeal
+        </button>
+
+        <a href="{{ url_for('feed') }}" class="btn btn-secondary">
+            Cancel
+        </a>
+    </form>
+</div>
+{% endblock %}

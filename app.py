@@ -670,6 +670,88 @@ def delete_comment(comment_id):
     # Redirect back to the page the user came from
     return redirect(request.referrer or url_for('feed'))
 
+
+@app.route('/appeal/<content_type>/<int:content_id>', methods=['GET', 'POST'])
+def submit_appeal(content_type, content_id):
+    """Allows users to appeal moderation decisions on their own content."""
+
+    user_id = session.get('user_id')
+
+    if not user_id:
+        flash('You must be logged in to submit an appeal.', 'danger')
+        return redirect(url_for('login'))
+
+    # Only posts and comments can be appealed.
+    if content_type not in ('post', 'comment'):
+        flash('Invalid appeal request.', 'danger')
+        return redirect(url_for('feed'))
+
+    table = 'posts' if content_type == 'post' else 'comments'
+
+    # Find the content and verify that the logged-in user owns it.
+    content = query_db(
+        f'SELECT id, content, user_id FROM {table} WHERE id = ?',
+        (content_id,),
+        one=True
+    )
+
+    if not content:
+        flash('The content you want to appeal was not found.', 'danger')
+        return redirect(url_for('feed'))
+
+    if content['user_id'] != user_id:
+        flash('You can only appeal your own content.', 'danger')
+        return redirect(url_for('feed'))
+
+    # Check whether the user already has a pending appeal.
+    existing_appeal = query_db(
+        """
+        SELECT id FROM moderation_appeals
+        WHERE user_id = ?
+          AND content_type = ?
+          AND content_id = ?
+          AND status = 'Pending'
+        """,
+        (user_id, content_type, content_id),
+        one=True
+    )
+
+    if existing_appeal:
+        flash('You already have a pending appeal for this content.', 'info')
+        return redirect(url_for('feed'))
+
+    if request.method == 'POST':
+        reason = request.form.get('appeal_reason', '').strip()
+
+        if not reason:
+            flash('Please provide a reason for your appeal.', 'warning')
+        elif len(reason) > 1000:
+            flash('Your appeal reason must be 1000 characters or fewer.', 'warning')
+        else:
+            db = get_db()
+            db.execute(
+                """
+                INSERT INTO moderation_appeals
+                (user_id, content_type, content_id, appeal_reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, content_type, content_id, reason)
+            )
+            db.commit()
+
+            flash('Your appeal has been submitted for review.', 'success')
+            return redirect(url_for('feed'))
+
+    moderated_content, _ = moderate_content(content['content'])
+
+    return render_template(
+        'appeal.html.j2',
+        content_type=content_type,
+        content=moderated_content,
+        content_id=content_id
+    )
+
+
 @app.route('/react', methods=['POST'])
 def add_reaction():
     """Handles adding a new reaction or updating an existing one."""
@@ -831,6 +913,27 @@ def admin_dashboard():
         comments_page = 1
     
     current_tab = request.args.get('tab', 'users') # Default to 'users' tab
+    
+    # Fetch moderation appeals for the admin dashboard.
+    appeals = query_db("""
+        SELECT
+            a.id,
+            a.user_id,
+            a.content_type,
+            a.content_id,
+            a.appeal_reason,
+            a.status,
+            a.admin_reason,
+            a.created_at,
+            a.reviewed_at,
+            u.username
+        FROM moderation_appeals a
+        JOIN users u ON a.user_id = u.id
+        ORDER BY
+            CASE WHEN a.status = 'Pending' THEN 0 ELSE 1 END,
+            a.created_at DESC
+    """)
+
 
     users_offset = (users_page - 1) * PAGE_SIZE
     
@@ -912,6 +1015,7 @@ def admin_dashboard():
                            users=users, 
                            posts=posts, 
                            comments=comments,
+                           appeals=appeals,
                            
                            # Pagination for Users
                            users_page=users_page,
@@ -980,6 +1084,55 @@ def admin_delete_comment(comment_id):
     flash(f'Comment {comment_id} has been deleted.', 'success')
     return redirect(url_for('admin_dashboard'))
 
+
+@app.route('/admin/appeals/<int:appeal_id>/review', methods=['POST'])
+def admin_review_appeal(appeal_id):
+    """Allows the admin to approve or reject a moderation appeal."""
+
+    if session.get('username') != 'admin':
+        flash('You do not have permission to review appeals.', 'danger')
+        return redirect(url_for('feed'))
+
+    decision = request.form.get('decision', '').strip()
+    admin_reason = request.form.get('admin_reason', '').strip()
+
+    if decision not in ('Approved', 'Rejected'):
+        flash('Invalid appeal decision.', 'danger')
+        return redirect(url_for('admin_dashboard', tab='appeals'))
+
+    if not admin_reason:
+        flash('Please provide a reason for your decision.', 'warning')
+        return redirect(url_for('admin_dashboard', tab='appeals'))
+
+    db = get_db()
+
+    appeal = db.execute(
+        "SELECT id, status FROM moderation_appeals WHERE id = ?",
+        (appeal_id,)
+    ).fetchone()
+
+    if not appeal:
+        flash('Appeal not found.', 'danger')
+        return redirect(url_for('admin_dashboard', tab='appeals'))
+
+    if appeal['status'] != 'Pending':
+        flash('This appeal has already been reviewed.', 'info')
+        return redirect(url_for('admin_dashboard', tab='appeals'))
+
+    db.execute(
+        """
+        UPDATE moderation_appeals
+        SET status = ?, admin_reason = ?, reviewed_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (decision, admin_reason, appeal_id)
+    )
+    db.commit()
+
+    flash(f'Appeal #{appeal_id} has been {decision.lower()}.', 'success')
+    return redirect(url_for('admin_dashboard', tab='appeals'))
+
+
 @app.route('/rules')
 def rules():
     return render_template('rules.html.j2')
@@ -1012,9 +1165,78 @@ def user_risk_analysis(user_id):
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
     
-    score = 0
+    """
+    Calculate a user's risk using their profile, average post risk,
+    average comment risk, and account age.
 
-    return score;
+    Posts have the greatest weight. Posts and comments from accounts
+    younger than 7 days receive a 1.5 multiplier.
+    """
+
+
+
+    """Calculate user risk according to the moderation specification."""
+
+    user = query_db(
+        'SELECT profile, created_at FROM users WHERE id = ?',
+        (user_id,),
+        one=True
+    )
+
+    if not user:
+        return 0.0
+
+    # Step 1: Profile score
+    _, profile_score = moderate_content(user['profile'] or '')
+
+    # Step 2: Average post score
+    posts = query_db(
+        'SELECT content FROM posts WHERE user_id = ?',
+        (user_id,)
+    )
+
+    post_scores = [
+        moderate_content(post['content'] or '')[1]
+        for post in posts
+    ]
+
+    average_post_score = (
+        sum(post_scores) / len(post_scores) if post_scores else 0.0
+    )
+
+    # Step 3: Average comment score
+    comments = query_db(
+        'SELECT content FROM comments WHERE user_id = ?',
+        (user_id,)
+    )
+
+    comment_scores = [
+        moderate_content(comment['content'] or '')[1]
+        for comment in comments
+    ]
+
+    average_comment_score = (
+        sum(comment_scores) / len(comment_scores)
+        if comment_scores else 0.0
+    )
+
+    # Step 4: Combine scores using the specified weights
+    content_risk_score = (
+        profile_score
+        + (average_post_score * 3)
+        + average_comment_score
+    )
+
+    # Step 5: Apply account-age multiplier
+    account_age_days = (datetime.utcnow() - user['created_at']).days
+
+    if account_age_days < 7:
+        content_risk_score *= 1.5
+    elif account_age_days < 30:
+        content_risk_score *= 1.2
+
+    # Step 6: Cap the final user score
+    return float(min(content_risk_score, 5.0))
 
     
 # Assignment 2.1
@@ -1034,11 +1256,72 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
+    
+    """Moderate content according to the supplied specification."""
+
+    if not isinstance(content, str) or not content:
+        return content if content is not None else "", 0.0
+
+    # Stage 1: Severe violations
+    text_lower = content.lower()
+
+    for word in TIER1_WORDS:
+        pattern = r"\b" + re.escape(word) + r"\b"
+        if re.search(pattern, text_lower, flags=re.IGNORECASE):
+            return "[content removed due to severe violation]", 5.0
+
+    for phrase in TIER2_PHRASES:
+        if phrase.lower() in text_lower:
+            return "[content removed due to spam/scam policy]", 5.0
 
     moderated_content = content
-    score = 0
+    score = 0.0
+
+    # Stage 2: Mask Tier 3 words with matching-length asterisks
+    for word in TIER3_WORDS:
+        pattern = r"\b" + re.escape(word) + r"\b"
+        matches = list(
+            re.finditer(pattern, moderated_content, flags=re.IGNORECASE)
+        )
+
+        for match in reversed(matches):
+            stars = "*" * len(match.group())
+            moderated_content = (
+                moderated_content[:match.start()]
+                + stars
+                + moderated_content[match.end():]
+            )
+
+        score += 2.0 * len(matches)
+
+    # Replace external links
+    url_pattern = r"(?:https?://|www\.)[^\s<>]+"
+    links = re.findall(url_pattern, moderated_content, flags=re.IGNORECASE)
+
+    if links:
+        score += 2.0 * len(links)
+        moderated_content = re.sub(
+            url_pattern,
+            "[link removed]",
+            moderated_content,
+            flags=re.IGNORECASE
+        )
+
+    # Excessive capitalization: >15 letters and >70% uppercase
+    letters = [char for char in content if char.isalpha()]
+
+    if len(letters) > 15:
+        uppercase_ratio = (
+            sum(char.isupper() for char in letters) / len(letters)
+        )
+        if uppercase_ratio > 0.70:
+            score += 0.5
+
+    return moderated_content, min(score, 5.0)
+
+
+
     
-    return moderated_content, score
 
 # Coding Assignment #3
 # Assignment 3.1
@@ -1066,6 +1349,27 @@ def recommend(user_id, filter_following):
 
     return recommended_posts;
 
+
 if __name__ == '__main__':
+    # Create the appeals table without changing existing data.
+    with sqlite3.connect(DATABASE) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS moderation_appeals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                content_type TEXT NOT NULL
+                    CHECK (content_type IN ('post', 'comment')),
+                content_id INTEGER NOT NULL,
+                appeal_reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Pending'
+                    CHECK (status IN ('Pending', 'Approved', 'Rejected')),
+                admin_reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
     app.run(debug=True, port=8080)
+
 
