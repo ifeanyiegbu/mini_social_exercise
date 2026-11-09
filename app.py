@@ -6,7 +6,7 @@ import json
 import sqlite3
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -121,39 +121,63 @@ def feed():
     params = []
     attention_posts = []
     if current_user_id:
+        # Calculate the current week in UTC (Monday to next Monday)
+        now = datetime.now(timezone.utc)
+
+        week_start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        next_week_start = week_start + timedelta(days=7)
+
+        # Format dates for SQLite
+        week_start_str = week_start.strftime("%Y-%m-%d %H:%M:%S")
+        next_week_start_str = next_week_start.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Count posts created during the current week
         post_count = query_db(
-            "SELECT COUNT(*) AS count FROM posts WHERE user_id = ?",
-            (current_user_id,),
+            """SELECT COUNT(*) AS count
+               FROM posts
+               WHERE user_id = ?
+               AND created_at >= ?
+               AND created_at < ?""",
+            (current_user_id, week_start_str, next_week_start_str),
             one=True
         )["count"]
 
+        # Count comments created during the current week
         comment_count = query_db(
-            "SELECT COUNT(*) AS count FROM comments WHERE user_id = ?",
-            (current_user_id,),
+            """SELECT COUNT(*) AS count
+               FROM comments
+               WHERE user_id = ?
+               AND created_at >= ?
+               AND created_at < ?""",
+            (current_user_id, week_start_str, next_week_start_str),
             one=True
         )["count"]
 
+        # Count reactions created during the current week
         reaction_count = query_db(
-            "SELECT COUNT(*) AS count FROM reactions WHERE user_id = ?",
-            (current_user_id,),
+            """SELECT COUNT(*) AS count
+               FROM reactions
+               WHERE user_id = ?
+               AND created_at >= ?
+               AND created_at < ?""",
+            (current_user_id, week_start_str, next_week_start_str),
             one=True
         )["count"]
 
+        # Cap each contribution at its individual goal
         completed = (
-            post_count +
-            comment_count +
-            reaction_count
+            min(post_count, POST_GOAL)
+            + min(comment_count, COMMENT_GOAL)
+            + min(reaction_count, REACTION_GOAL)
         )
 
-        goal_total = (
-            POST_GOAL +
-            COMMENT_GOAL +
-            REACTION_GOAL
-        )
+        total_goal = POST_GOAL + COMMENT_GOAL + REACTION_GOAL
 
-        progress_percent = min(
-            round((completed / goal_total) * 100),
-            100
+        progress_percent = round(
+            (completed / total_goal) * 100
         )
         
         attention_posts = query_db(
@@ -564,9 +588,8 @@ def signup():
             session['user_id'] = new_user_id
             session['username'] = username
 
-            # 3. Flash a welcome message and redirect to the feed.
             flash(f'Welcome, {username}! Your account has been created.', 'success')
-            return redirect(url_for('feed')) # Redirect to the main feed/dashboard
+            return redirect(url_for('welcome'))
 
         except sqlite3.IntegrityError:
             flash('Username already taken. Please choose another one.', 'danger')
@@ -779,9 +802,13 @@ def add_reaction():
         db.execute('UPDATE reactions SET reaction_type = ? WHERE id = ?',
                    (new_reaction_type, existing_reaction['id']))
     else:
-        # Step 3: If it does not exist, INSERT a new reaction.
-        db.execute('INSERT INTO reactions (post_id, user_id, reaction_type) VALUES (?, ?, ?)',
-                   (post_id, user_id, new_reaction_type))
+        # Step 3: Insert a new reaction with its creation timestamp.
+        db.execute(
+            '''INSERT INTO reactions
+            (post_id, user_id, reaction_type, created_at)
+            VALUES (?, ?, ?, datetime('now'))''',
+            (post_id, user_id, new_reaction_type)
+        )
 
     db.commit()
 
@@ -1136,6 +1163,13 @@ def admin_review_appeal(appeal_id):
 @app.route('/rules')
 def rules():
     return render_template('rules.html.j2')
+    
+# Coding Assignment 3 - Design Claim 11
+# Help newcomers understand MiniSocial before participating.
+
+@app.route('/welcome')
+def welcome():
+    return render_template('welcome.html.j2')
 
 @app.template_global()
 def loop_color(user_id):
@@ -1345,9 +1379,118 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
+    """
+    Recommend up to 5 posts based on:
+    - Topics the user has positively reacted to
+    - Posts from users they follow
+    - Popularity of posts
 
-    return recommended_posts;
+    Returns posts in reverse-chronological order.
+    """
+
+    # Recommend recent popular posts to visitors who are not logged in.
+    if not user_id:
+        return query_db("""
+            SELECT p.id, p.content, p.created_at,
+                   u.username, u.id AS user_id
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            LEFT JOIN reactions r ON r.post_id = p.id
+            GROUP BY p.id
+            ORDER BY COUNT(r.id) DESC, p.created_at DESC
+            LIMIT 5
+        """)
+
+    # Identify topics from posts the user has positively reacted to.
+    liked_posts = query_db("""
+        SELECT p.content
+        FROM posts p
+        JOIN reactions r ON r.post_id = p.id
+        WHERE r.user_id = ?
+          AND r.reaction_type IN ('like', 'love')
+    """, (user_id,))
+
+    # Extract meaningful words representing the user's interests.
+    stop_words = {
+        'the', 'and', 'for', 'with', 'that', 'this',
+        'from', 'have', 'your', 'about', 'just',
+        'are', 'was', 'you', 'but', 'not'
+    }
+
+    interests = set()
+
+    for post in liked_posts:
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', post['content'].lower())
+
+        for word in words:
+            if word not in stop_words:
+                interests.add(word)
+
+    # Retrieve candidate posts.
+    query = """
+        SELECT p.id, p.content, p.created_at,
+               u.username, u.id AS user_id,
+               COUNT(r.id) AS reaction_count,
+               EXISTS (
+                   SELECT 1 FROM follows f
+                   WHERE f.follower_id = ?
+                     AND f.followed_id = p.user_id
+               ) AS is_followed
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        LEFT JOIN reactions r ON r.post_id = p.id
+        WHERE p.user_id != ?
+          AND p.id NOT IN (
+              SELECT post_id FROM reactions WHERE user_id = ?
+          )
+    """
+
+    params = [user_id, user_id, user_id]
+
+    if filter_following:
+        query += """
+          AND p.user_id IN (
+              SELECT followed_id
+              FROM follows
+              WHERE follower_id = ?
+          )
+        """
+        params.append(user_id)
+
+    query += " GROUP BY p.id"
+
+    candidates = query_db(query, params)
+
+    # Score candidates by topic similarity, follows, and popularity.
+    scored_posts = []
+
+    for post in candidates:
+        post_words = set(
+            re.findall(r'\b[a-zA-Z]{3,}\b', post['content'].lower())
+        )
+
+        matching_topics = len(interests.intersection(post_words))
+
+        score = (
+            matching_topics * 5
+            + post['is_followed'] * 3
+            + min(post['reaction_count'], 10)
+        )
+
+        scored_posts.append((score, post))
+
+    # Select the 5 highest-scoring posts.
+    scored_posts.sort(
+        key=lambda item: (item[0], item[1]['created_at']),
+        reverse=True
+    )
+
+    top_posts = [item[1] for item in scored_posts[:5]]
+
+    # Display the selected posts in reverse-chronological order.
+    top_posts.sort(key=lambda post: post['created_at'], reverse=True)
+
+    return top_posts
 
 
 if __name__ == '__main__':

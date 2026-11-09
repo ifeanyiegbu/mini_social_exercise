@@ -1,0 +1,47 @@
+{% extends "base.html.j2" %}
+
+{% block content %}
+<div class="container mt-4">
+
+    <h2>Welcome to MiniSocial!</h2>
+
+    <p>
+        MiniSocial is a community where people share
+        posts, exchange ideas, and interact with others.
+    </p>
+
+    <h4>Getting Started</h4>
+
+    <ul>
+        <li>Create posts to share your ideas.</li>
+        <li>Follow users whose content interests you.</li>
+        <li>React to posts using emojis.</li>
+        <li>Comment on posts to join discussions.</li>
+        <li>Use the Recommended tab to discover posts.</li>
+    </ul>
+
+    <h4>Community Expectations</h4>
+
+    <p>
+        Treat other members respectfully. Avoid offensive
+        language, spam, scams, and harmful content.
+        Posts and comments are automatically moderated.
+    </p>
+
+    <p>
+        If you believe your content was moderated unfairly,
+        you can submit an appeal for administrator review.
+    </p>
+
+    <a href="{{ url_for('rules') }}"
+       class="btn btn-outline-primary">
+        Read Community Rules
+    </a>
+
+    <a href="{{ url_for('feed') }}"
+       class="btn btn-primary">
+        Explore Posts
+    </a>
+
+</div>
+{% endblock %}
